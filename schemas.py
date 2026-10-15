@@ -19,3 +19,19 @@ class LienReponse(BaseModel):
 class ReponseChat(BaseModel):
     reponse: str
     liens: list[LienReponse]
+
+class RequeteVocale(BaseModel):
+    audio_base64: str
+    mime_type: str = "audio/wav"
+    historique: list[MessageHistorique] = []
+
+
+class ReponseVocale(BaseModel):
+    transcription: str
+    langue: str
+    reponse: str
+    liens: list[LienReponse]
+
+
+class RequeteVoix(BaseModel):
+    texte: str

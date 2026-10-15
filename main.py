@@ -1,16 +1,22 @@
-from fastapi import FastAPI, Header, HTTPException
+import re
+
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 import django_client as dj
+import evenements
+import gemini
 import llm
 from config import ORIGINES_AUTORISEES
 from intents import construire_contexte_donnees
 from navigation import trouver_liens
-from schemas import LienReponse, ReponseChat, RequeteChat
+from schemas import LienReponse, ReponseChat, ReponseVocale, RequeteChat, RequeteVocale, RequeteVoix
 
+TAILLE_MAX_AUDIO_B64 = 6_000_000  # environ 4 Mo d'audio
+CHEMIN_EVENEMENT = "/evenements/{id}"  # page d'un événement dans l'application
+EMOJIS = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
 
-app = FastAPI(title="SamaPass Chatbot")
-
+app = FastAPI(title="Kcrowd Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,107 +27,95 @@ app.add_middleware(
 
 
 def extraire_jeton(authorization: str | None) -> str:
-    """
-    Récupère le JWT envoyé par Angular.
-
-    Exemple :
-    Authorization: Bearer eyJ...
-    """
-
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Jeton d'authentification manquant.",
-        )
-
+        raise HTTPException(status_code=401, detail="Jeton d'authentification manquant.")
     return authorization.removeprefix("Bearer ").strip()
+
+
+async def identifier(authorization: str | None):
+    jeton = extraire_jeton(authorization)
+    try:
+        identite = await dj.qui_est_ce(jeton)
+    except dj.ErreurDjango as erreur:
+        raise HTTPException(status_code=401, detail=str(erreur)) from erreur
+    return jeton, identite
+
+
+async def repondre(message: str, historique, jeton: str, identite: dict):
+    """Le même traitement pour un message écrit et pour un message vocal déjà transcrit."""
+    role = identite.get("role", "user")
+    prenom = identite.get("firstName", "")
+
+    donnees = await construire_contexte_donnees(message, role, jeton)
+    liste_evenements = await evenements.lignes_evenements()
+    liens = trouver_liens(message, role)
+    historique_brut = [{"role": m.role, "content": m.content} for m in historique]
+
+    try:
+        texte = await llm.generer_reponse(
+            role=role,
+            prenom=prenom,
+            message=message,
+            donnees=donnees,
+            historique=historique_brut,
+            evenements=liste_evenements,
+        )
+    except llm.ErreurLLM as erreur:
+        raise HTTPException(status_code=502, detail=str(erreur)) from erreur
+
+    liens_reponse = [
+        LienReponse(label=item["titre"], path=CHEMIN_EVENEMENT.format(id=item["id"]))
+        for item in evenements.evenements_cites(texte)
+    ]
+    if liens_reponse and not any(l.path == "/evenements" for l in liens):
+        liens_reponse.append(LienReponse(label="Voir tous les événements", path="/evenements"))
+    deja = {l.path for l in liens_reponse}
+    liens_reponse += [LienReponse(label=l.label, path=l.path) for l in liens if l.path not in deja]
+    return texte, liens_reponse[:5]
 
 
 @app.get("/sante")
 async def sante():
-    """
-    Vérifie que le service FastAPI fonctionne.
-    """
-    return {
-        "statut": "ok",
-        "service": "SamaPass Chatbot",
-    }
+    return {"statut": "ok", "service": "Kcrowd Chatbot"}
+
+
+@app.get("/evenements-apercu")
+async def evenements_apercu():
+    """Ce que l'IA voit des événements (données publiques) : sert à vérifier la connexion avec Django."""
+    lignes = await evenements.lignes_evenements()
+    return {"lignes": lignes, "erreur": evenements._cache["erreur"], "champs_du_premier": evenements._cache["cles"]}
 
 
 @app.post("/chat", response_model=ReponseChat)
-async def chat(
-    requete: RequeteChat,
-    authorization: str | None = Header(default=None),
-):
-    """
-    Endpoint principal du chatbot.
-    """
+async def chat(requete: RequeteChat, authorization: str | None = Header(default=None)):
+    jeton, identite = await identifier(authorization)
+    texte, liens = await repondre(requete.message, requete.historique, jeton, identite)
+    return ReponseChat(reponse=texte, liens=liens)
 
-    # 1. Récupérer le JWT envoyé par Angular
-    jeton = extraire_jeton(authorization)
 
-    # 2. Vérifier l'utilisateur auprès de Django
+@app.post("/chat-vocal", response_model=ReponseVocale)
+async def chat_vocal(requete: RequeteVocale, authorization: str | None = Header(default=None)):
+    jeton, identite = await identifier(authorization)
+    if len(requete.audio_base64) > TAILLE_MAX_AUDIO_B64:
+        raise HTTPException(status_code=413, detail="Message vocal trop long.")
     try:
-        identite = await dj.qui_est_ce(jeton)
+        transcription, langue = await gemini.transcrire(requete.audio_base64, requete.mime_type)
+    except gemini.ErreurGemini as erreur:
+        raise HTTPException(status_code=502, detail=str(erreur)) from erreur
+    if not transcription:
+        raise HTTPException(status_code=422, detail="Je n'ai pas compris l'audio. Réessayez en parlant plus près du micro.")
+    texte, liens = await repondre(transcription, requete.historique, jeton, identite)
+    return ReponseVocale(transcription=transcription, langue=langue, reponse=texte, liens=liens)
 
-    except dj.ErreurDjango as erreur:
-        raise HTTPException(
-            status_code=401,
-            detail=str(erreur),
-        ) from erreur
 
-    # 3. Récupérer les informations de l'utilisateur
-    role = identite.get("role", "user")
-    prenom = identite.get("firstName", "")
-
-    # 4. Récupérer les données réelles nécessaires
-    #    depuis Django
-    donnees = await construire_contexte_donnees(
-        requete.message,
-        role,
-        jeton,
-    )
-
-    # 5. Déterminer les éventuels liens de navigation
-    liens = trouver_liens(
-        requete.message,
-        role,
-    )
-
-    # 6. Transformer l'historique reçu par FastAPI
-    #    dans le format attendu par le LLM
-    historique_brut = [
-        {
-            "role": message.role,
-            "content": message.content,
-        }
-        for message in requete.historique
-    ]
-
-    # 7. Appeler le modèle IA
+@app.post("/voix")
+async def voix(requete: RequeteVoix, authorization: str | None = Header(default=None)):
+    await identifier(authorization)
+    texte = EMOJIS.sub("", requete.texte).strip()[:700]
+    if not texte:
+        raise HTTPException(status_code=422, detail="Texte vide.")
     try:
-        texte_reponse = await llm.generer_reponse(
-            role=role,
-            prenom=prenom,
-            message=requete.message,
-            donnees=donnees,
-            historique=historique_brut,
-        )
-
-    except llm.ErreurLLM as erreur:
-        raise HTTPException(
-            status_code=502,
-            detail=str(erreur),
-        ) from erreur
-
-    # 8. Retourner la réponse au frontend
-    return ReponseChat(
-        reponse=texte_reponse,
-        liens=[
-            LienReponse(
-                label=l.label,
-                path=l.path,
-            )
-            for l in liens
-        ],
-    )
+        wav = await gemini.synthetiser(texte)
+    except gemini.ErreurGemini as erreur:
+        raise HTTPException(status_code=502, detail=str(erreur)) from erreur
+    return Response(content=wav, media_type="audio/wav")

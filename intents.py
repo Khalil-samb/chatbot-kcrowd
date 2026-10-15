@@ -78,7 +78,7 @@ def resumer_commission_totale(transactions: list) -> str:
         return t.get("amount", 0) * 0.05
 
     total = sum(commission_de(t) for t in reussies)
-    return f"Commission totale perçue par SamaPass : {total:,.0f} FCFA.".replace(",", " ")
+    return f"Commission totale perçue par Kcrowd : {total:,.0f} FCFA.".replace(",", " ")
 
 
 # ── Détection d'intention : quelle donnée aller chercher pour ce message ──
@@ -94,7 +94,7 @@ class Intention:
 # ⚠️ Comme pour la navigation : billets et favoris personnels sont
 # accessibles à TOUS les rôles, pas seulement aux utilisateurs simples.
 INTENTIONS_COMMUNES: tuple[Intention, ...] = (
-    Intention("billets", ("billet", "ticket", "achete", "acheté"), dj.mes_billets, resumer_billets),
+    Intention("billets", ("billet", "ticket", "achete", "acheté", "bileti"), dj.mes_billets, resumer_billets),
     Intention("favoris", ("favori", "aime", "coeur"), dj.mes_favoris, resumer_favoris),
 )
 

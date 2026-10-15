@@ -24,8 +24,8 @@ class LienNav:
 # organisateurs/admins ; ces liens communs évitent de refaire cette erreur à
 # chaque nouveau lien ajouté plus tard.
 LIENS_COMMUNS: tuple[LienNav, ...] = (
-    LienNav("Rechercher des événements", "/evenements", ("evenement", "concert", "festival", "chercher", "trouver")),
-    LienNav("Mes billets", "/compte/mes-billets", ("billet", "ticket", "achete", "acheté")),
+    LienNav("Rechercher des événements", "/evenements", ("evenement", "concert", "festival", "chercher", "trouver", "sortie", "idee", "populaire", "a la mode", "ndaje", "what's on", "event")),
+    LienNav("Mes billets", "/compte/mes-billets", ("billet", "ticket", "achete", "acheté", "bileti")),
     LienNav("Mes favoris", "/compte/favoris", ("favori", "aime", "coeur")),
     LienNav("Mon profil", "/compte/profil", ("profil", "compte", "coordonnee", "coordonnées")),
 )
